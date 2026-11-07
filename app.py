@@ -265,7 +265,13 @@ def campaign_list():
 
 @app.route("/api/health")
 def health():
-    return jsonify(status="ok", application="Communication Platform")
+    try:
+        with db() as conn:
+            conn.execute("SELECT 1").fetchone()
+        return jsonify(status="ok", database="connected", database_type="Neon PostgreSQL" if DATABASE_URL else "Local SQLite", application="Communication Platform")
+    except Exception:
+        app.logger.exception("Database health check failed")
+        return jsonify(status="error", database="disconnected", application="Communication Platform"), 503
 
 @app.errorhandler(413)
 def too_large(_):
