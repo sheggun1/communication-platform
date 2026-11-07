@@ -3,12 +3,13 @@ import re
 import csv
 import io
 import json
-import sqlite3
 import uuid
 from datetime import datetime
 from functools import wraps
 
 import pandas as pd
+import psycopg
+from psycopg.rows import dict_row
 import requests
 from docx import Document
 from dotenv import load_dotenv
@@ -21,13 +22,22 @@ app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "dev-only-change-this-secret")
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 DB_PATH = os.path.join(app.instance_path, "communications.sqlite3")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 ALLOWED_EXTENSIONS = {"csv", "xlsx", "xls", "docx"}
 os.makedirs(app.instance_path, exist_ok=True)
 
 def db():
+    """Use Neon PostgreSQL when DATABASE_URL is set; otherwise use local SQLite."""
+    if DATABASE_URL:
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=10)
+    import sqlite3
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+def sql(query):
+    """Translate parameter placeholders for PostgreSQL while retaining local SQLite support."""
+    return query.replace("?", "%s") if DATABASE_URL else query
 
 def init_db():
     with db() as conn:
@@ -223,7 +233,7 @@ def send_campaign():
     campaign_id = str(uuid.uuid4())[:8]
     sent, failed, results = 0, 0, []
     with db() as conn:
-        conn.execute("INSERT INTO campaigns VALUES (?,?,?,?,?,?,?,?,?)",
+        conn.execute(sql("INSERT INTO campaigns VALUES (?,?,?,?,?,?,?,?,?)"),
             (campaign_id, name, channel, "sending", len(contacts), 0, 0,
              datetime.utcnow().isoformat(timespec="seconds"), "[]"))
     for index, contact in enumerate(contacts):
@@ -241,7 +251,7 @@ def send_campaign():
             failed += 1
             results.append({"recipient": contact.get("name") or contact.get("Name") or contact.get("email") or contact.get("phone") or f"Contact {index+1}", "status": "Failed", "detail": str(exc)[:250]})
         with db() as conn:
-            conn.execute("UPDATE campaigns SET sent=?, failed=?, status=?, details=? WHERE id=?",
+            conn.execute(sql("UPDATE campaigns SET sent=?, failed=?, status=?, details=? WHERE id=?"),
                 (sent, failed, "completed" if index == len(contacts)-1 else "sending",
                  json.dumps(results), campaign_id))
     return jsonify(id=campaign_id, sent=sent, failed=failed, total=len(contacts), results=results)
